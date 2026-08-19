@@ -1,3 +1,92 @@
+import os
+import asyncio
+import aiohttp
+from aiohttp import web
+from pyrogram import Client, filters
+import firebase_admin
+from firebase_admin import credentials, firestore
+
+# ==========================================
+# 1. الإعدادات الأساسية
+# ==========================================
+API_ID = 35148261
+API_HASH = "57bbfcc98eddf401e2cdaa36d3e36a6e"
+BOT_TOKEN = "8956444396:AAEaabOQkS8X9GxuWT64NhZ80gqYMYqYsOo"
+CHANNEL_ID = -1004357723672
+SERVER_DOMAIN = "https://tg-streamer-production-80b4.up.railway.app"
+
+# ==========================================
+# 2. ربط قاعدة بيانات فايربيس (Firestore)
+# ==========================================
+db = None
+try:
+    if os.path.exists("firebase-adminsdk-key.json"):
+        cred = credentials.Certificate("firebase-adminsdk-key.json")
+        firebase_admin.initialize_app(cred)
+        db = firestore.client()
+        print("✅ تم الاتصال بـ Firebase بنجاح!")
+    else:
+        print("⚠️ ملف firebase-adminsdk-key.json غير موجود.")
+except Exception as e:
+    print(f"❌ خطأ في ربط Firebase: {e}")
+
+# ==========================================
+# 3. إعداد عميل تيليجرام
+# ==========================================
+app = Client("stream_session", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, in_memory=True)
+routes = web.RouteTableDef()
+
+# ==========================================
+# 4. المراقب التلقائي (الرفع لقسم: مدبلج عربي)
+# ==========================================
+@app.on_message(filters.chat(CHANNEL_ID) & (filters.video | filters.document))
+async def auto_upload_to_firebase(client, message):
+    if not db:
+        return
+
+    try:
+        caption = message.caption or ""
+        if "tmdb:" in caption.lower():
+            tmdb_id = caption.lower().split("tmdb:")[1].strip().split()[0]
+            message_id = message.id
+            collection_name = "مدبلج عربي"
+            stream_url = f"{SERVER_DOMAIN}/stream/{message_id}?v=1"
+            
+            doc_ref = db.collection(collection_name).document(tmdb_id)
+            doc_ref.set({
+                'tmdb_id': tmdb_id,
+                'stream_url': stream_url,
+                'message_id': message_id,
+                'file_size': message.video.file_size if message.video else message.document.file_size,
+                'category': collection_name,
+                'timestamp': firestore.SERVER_TIMESTAMP
+            }, merge=True)
+            print(f"🎬 تم الرفع التلقائي لقسم: [{collection_name}] | TMDB: {tmdb_id}")
+    except Exception as e:
+        print(f"❌ حدث خطأ أثناء الرفع التلقائي: {e}")
+
+# ==========================================
+# 5. مسارات الويب وسيرفر البث المباشر
+# ==========================================
+@routes.get("/")
+async def home(request):
+    return web.Response(text="Server is running securely and actively streaming!")
+
+@routes.get("/info/{message_id}")
+async def info(request):
+    try:
+        msg_id = int(request.match_info["message_id"])
+        msg = await app.get_messages(CHANNEL_ID, msg_id)
+        media = msg.video or msg.document or msg.animation
+        if not media: return web.Response(text="لا يوجد فيديو في هذه الرسالة")
+        return web.json_response({
+            "Status": "البوت يعمل بنجاح!",
+            "File_Size_Bytes": media.file_size,
+            "Mime_Type": getattr(media, "mime_type", "unknown")
+        })
+    except Exception as e:
+        return web.Response(text=f"مشكلة: {str(e)}")
+
 @routes.get("/stream/{message_id}")
 async def stream_media(request):
     try:
@@ -11,7 +100,7 @@ async def stream_media(request):
         file_size = media.file_size
         mime_type = getattr(media, "mime_type", "video/mp4") or "video/mp4"
         
-        # ألغينا التوجيه المباشر، وضفنا أمر (inline) لإجبار المتصفح على العرض وعدم التنزيل
+        # إجبار المتصفح على عرض الفيديو (inline) وعدم تنزيله
         headers = {
             "Content-Type": mime_type,
             "Accept-Ranges": "bytes",
@@ -64,3 +153,13 @@ async def stream_media(request):
 
     except Exception as e:
         return web.Response(status=500, text=f"Streaming Error: {str(e)}")
+
+async def init_app():
+    await app.start()
+    app_web = web.Application()
+    app_web.add_routes(routes)
+    return app_web
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8080))
+    web.run_app(init_app(), port=port)
