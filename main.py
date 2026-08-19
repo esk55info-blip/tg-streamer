@@ -1,4 +1,4 @@
-import math
+import asyncio
 from aiohttp import web
 from pyrogram import Client
 
@@ -20,7 +20,7 @@ async def stream_media(request):
         message_id = int(request.match_info["message_id"])
         msg = await app.get_messages(CHANNEL_ID, message_id)
         
-        media = msg.video or msg.document
+        media = msg.video or msg.document or msg.animation
         if not msg or not media:
             return web.Response(status=404, text="Media Not Found")
         
@@ -30,8 +30,9 @@ async def stream_media(request):
 
         if range_header:
             range_val = range_header.replace("bytes=", "").split("-")
-            from_byte = int(range_val[0])
-            to_byte = int(range_val[1]) if range_val[1] else file_size - 1
+            from_byte = int(range_val[0]) if range_val[0] else 0
+            to_byte = int(range_val[1]) if (len(range_val) > 1 and range_val[1]) else file_size - 1
+            to_byte = min(to_byte, file_size - 1)
             length = to_byte - from_byte + 1
 
             headers = {
@@ -39,29 +40,48 @@ async def stream_media(request):
                 "Accept-Ranges": "bytes",
                 "Content-Length": str(length),
                 "Content-Type": mime_type,
+                "Access-Control-Allow-Origin": "*",
             }
             response = web.StreamResponse(status=206, headers=headers)
             await response.prepare(request)
 
-            # معالجة التدفق الذكي لقطع الفيديو
-            chunk_size = 1024 * 1024 # 1MB
-            async for chunk in app.stream_media(msg):
-                if not chunk:
-                    break
-                await response.write(chunk)
+            current_pos = 0
+            try:
+                async for chunk in app.stream_media(msg):
+                    chunk_len = len(chunk)
+                    chunk_start = current_pos
+                    chunk_end = current_pos + chunk_len - 1
+                    current_pos += chunk_len
+
+                    if chunk_end < from_byte:
+                        continue
+                    if chunk_start > to_byte:
+                        break
+
+                    slice_start = max(0, from_byte - chunk_start)
+                    slice_end = min(chunk_len, to_byte - chunk_start + 1)
+                    await response.write(chunk[slice_start:slice_end])
+            except (asyncio.CancelledError, ConnectionResetError):
+                # تجاهل انقطاع اتصال مشغل آبل أثناء الفحص الأولي
+                pass
+            
             return response
 
-        # في حال كان الطلب عادياً بدون Range
         headers = {
             "Content-Length": str(file_size),
             "Accept-Ranges": "bytes",
             "Content-Type": mime_type,
+            "Access-Control-Allow-Origin": "*",
         }
         response = web.StreamResponse(headers=headers)
         await response.prepare(request)
 
-        async for chunk in app.stream_media(msg):
-            await response.write(chunk)
+        try:
+            async for chunk in app.stream_media(msg):
+                await response.write(chunk)
+        except (asyncio.CancelledError, ConnectionResetError):
+            pass
+
         return response
 
     except Exception as e:
