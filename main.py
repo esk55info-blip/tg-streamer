@@ -1,11 +1,11 @@
-import os
 from aiohttp import web
 from pyrogram import Client
 
-API_ID = int(os.environ.get("API_ID"))
-API_HASH = os.environ.get("API_HASH")
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-CHANNEL_ID = int(os.environ.get("CHANNEL_ID"))
+# بياناتك مدمجة مباشرة
+API_ID = 35148261
+API_HASH = "57bbfcc98eddf401e2cdaa36d3e36a6e"
+BOT_TOKEN = "8956444396:AAEaabOQkS8X9GxuWT64NhZ80gqYMYqYsOo"
+CHANNEL_ID = -1004357723672
 
 app = Client("stream_session", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 routes = web.RouteTableDef()
@@ -63,4 +63,4 @@ async def init_app():
     return web_app
 
 if __name__ == "__main__":
-    web.run_app(init_app(), port=int(os.environ.get("PORT", 8080)))
+    web.run_app(init_app(), port=8080)
